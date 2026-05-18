@@ -11,6 +11,11 @@ wiz_ctrl = $dd80
 wiz_data = $dd81
 wiz_fifo = $dd82
 
+' wizfi status byte
+' software driven
+wizfi_status = $b0
+ip_status = $b1
+
 ' network led registers
 k2_leds = $d6a0
 ntwk_rgb = $d6b3
@@ -28,13 +33,16 @@ bitmap clear 0
 ' Initialize the WIZFi module
 poke wiz_ctrl, 0
 
+' setup screens and sprites
+makesprite()
+drawmap()
+
+
 ' set up the WIZFi module with the necessary commands
-print"PRESS Q to EXIT PROGRAM AFTER MAP LOADS"
 initialize()
 connect()
 connect_api()
-makesprite()
-drawmap()
+
 cursor off
 
 ' Get ISS position from API
@@ -54,10 +62,16 @@ repeat
     if (lat$<>"")&(lon$<>"")
         lat#=val(lat$)
         lon#=val(lon$)
+        ts=val(tms$)
+        hh=ts\3600
+        hh=hh%24
+        mm=ts\60
+        mm=mm%60
+        ss=ts%60
     else
         recon=recon+1
         if recon>1
-            print rd$"                   RECONNECTION ATTEMPT";
+            print at 20,28; rd$;"RECONNECTION ATTEMPT"
             connect_api()
             recon=0
         endif
@@ -68,11 +82,13 @@ repeat
     print "                S.P.O.T. — ";ltb$;"S";bl$;"atellite ";ltb$;
     print "P";bl$;"osition and ";ltb$;"O";bl$;"rbital ";ltb$;"T";
     print bl$;"racking"
-    for n=1 to 56
-        print 
-    next
-    print "                  Latitude ";ltb$;lat#,
-    print bl$;"  Longitude ";ltb$;lon#
+    print at 57,20; "UTC Time: ";ltb$;hh;":";
+    if mm<10 then print "0";
+    print mm;":";
+    if ss<10 then print "0";
+    print ss
+    print at 56,45; bl$;"Latitude  ";ltb$;lat#
+    print at 57,45; bl$;"Longitude ";ltb$;lon#
     x=int((lon#+180)/360*319+0.5)
     y=int((90-lat#)/180*239+0.5)
     pl_counter=pl_counter+1
@@ -83,10 +99,10 @@ repeat
     sprite 0 image 0 to x,y
     q$=inkey$()
     if (q$<>"") & (q$<>"q")
-        print rd$"                             PRESS Q TO EXIT PROGRAM";
+        print at 20,28; rd$"PRESS Q TO EXIT PROGRAM";
     endif
     if q$="q"
-        print rd$"                             EXITING PROGRAM";
+        print at 21,28; rd$"EXITING PROGRAM";
     else
         delay(100000) 
     endif
@@ -115,6 +131,7 @@ endproc
 
 proc connect()
     ' Connect to WiFi
+    poke ip_status, 0
     print "CONNECTING TO WIFI..."
     print "IF ALREADY CONNECTED, PRESS ENTER."
     print
@@ -123,10 +140,12 @@ proc connect()
     if wifi_id$<>""
         print "Enter WIFI password: ";
         input wifi_pass$
-        cmd$ = "AT+CWJAP_CUR='"+wifi_id$+"','"+wifi_pass$+"'"
-        sendcommand(cmd$)
-        delay(50000)
-        silentread()
+        repeat
+            cmd$ = "AT+CWJAP_CUR='"+wifi_id$+"','"+wifi_pass$+"'"
+            sendcommand(cmd$)
+            delay(50000)
+            readresponse()
+        until peek(ip_status)=1
     endif
     sendcommand("AT+CIPSTA_CUR?")
     delay(50000)
@@ -158,12 +177,19 @@ endproc
 proc readresponse()
     ' Read the response from the WIZFi module and 
     ' print it to the screen
+    r$="0123456789"
     poke k2_leds, peek(k2_leds)|64
     while peek(wiz_fifo)<>0
         pokel ntwk_rgb, $ff0000
         b=peek(wiz_data)
         pokel ntwk_rgb, $000000
         print chr$(b);
+        r$=right$(r$+chr$(b),10)
+        if right$(r$,2)="OK" then poke wizfi_status, 1
+        if right$(r$,4)="FAIL" then poke wizfi_status, 9
+        if right$(r$,5)="ERROR" then poke wizfi_status, 8
+        if right$(r$,9)="busy p..." then poke wizfi_status, 2
+        if right$(r$,6)="GOT IP" then poke ip_status, 1
     wend
     poke k2_leds, peek(k2_leds) & $bf
 endproc
@@ -171,11 +197,18 @@ endproc
 proc silentread()
     ' Read the response from the WIZFi module 
     ' without printing it to the screen
+    r$="0123456789"
     poke k2_leds, peek(k2_leds)|64
     while peek(wiz_fifo)<>0
         pokel ntwk_rgb, $ff0000
         b=peek(wiz_data)
         pokel ntwk_rgb, $000000
+        r$=right$(r$+chr$(b),10)
+        if right$(r$,2)="OK" then poke wizfi_status, 1
+        if right$(r$,4)="FAIL" then poke wizfi_status, 9
+        if right$(r$,5)="ERROR" then poke wizfi_status, 8
+        if right$(r$,9)="busy p..." then poke wizfi_status, 2
+        if right$(r$,6)="GOT IP" then poke ip_status, 1
     wend
     poke k2_leds, peek(k2_leds) & $bf
 endproc
@@ -184,58 +217,87 @@ proc getdata()
     ' Read the data from the API response and
     ' extract the latitude and longitude
     poke k2_leds, peek(k2_leds)|64
-    bf$="12345":gd=0:lgth$=""
+    bf$="12345678901234567":state=0:lgth$=""
     lt$=chr$(34)+"latitude"+chr$(34)+": "+chr$(34)
     ln$=chr$(34)+"longitude"+chr$(34)+": "+chr$(34) 
-    lat$="":lon$=""
-    while peek(wiz_fifo)<>0
-        pokel ntwk_rgb, $ff0000
-        b=peek(wiz_data)
-        if gd=1
-            if chr$(b)=":"
-                gd=2
-                lgth=val(lgth$)
-                latlon=0
-                bf$="12345678901234"
-            else
-                lgth$=lgth$+chr$(b)
-            endif
-        endif
-        if gd=0
-            bf$=right$(bf$+chr$(b),5)
-            if bf$="+IPD," then gd=1
-        endif
-        if gd=2
-            for n=1 to lgth
-                b=peek(wiz_data)
-                pokel ntwk_rgb, $ff0000
-                bf$=bf$+chr$(b)
-                bf$=right$(bf$,15)
-                if latlon = 0
-                     if right$(bf$,13)=lt$ then latlon=1
-                     if right$(bf$,14)=ln$ then latlon=2
+    ts$=chr$(34)+"timestamp"+chr$(34)+": "
+    lat$="":lon$="":clen$="":tms$=""
+    ct$="Content-Length: ":ct=0
+    do_count=0
+    rnlf$=chr$(13)+chr$(10)+chr$(13)+chr$(10)
+    repeat
+        while peek(wiz_fifo)>0
+            pokel ntwk_rgb, $ff0000
+            b=peek(wiz_data)
+            if state=1
+                if chr$(b)=":"
+                    state=2
+                    lgth=val(lgth$)
+                    latlon=0
                 else
-                    if latlon=1
-                        if b=34
-                            latlon=0
-                        else 
-                            lat$=lat$+chr$(b)
-                        endif
-                    endif
-                    if latlon=2
-                        if b=34
-                            latlon=0
-                        else 
-                            lon$=lon$+chr$(b)
-                        endif
-                    endif
+                    lgth$=lgth$+chr$(b)
                 endif
-                pokel ntwk_rgb, $000000
-            next
-            gd=4
-        endif
-        pokel ntwk_rgb, $000000
-    wend
+            endif
+            if state=0
+                bf$=right$(bf$+chr$(b),20)
+                if right$(bf$,5)="+IPD," then state=1
+            endif
+            if state=2
+                for n=1 to lgth
+                    if do_count=1 then ct=ct-1
+                    b=peek(wiz_data)
+                    pokel ntwk_rgb, $ff0000
+                    bf$=bf$+chr$(b)
+                    bf$=right$(bf$,16)
+                    if latlon = 0
+                         if right$(bf$,13)=lt$ then latlon=1
+                         if right$(bf$,14)=ln$ then latlon=2
+                         if right$(bf$,13)=ts$ then latlon=3
+                         if right$(bf$,15)=ct$ then latlon=4
+                    else
+                        if latlon=1
+                            if b=34
+                                latlon=0
+                            else 
+                                lat$=lat$+chr$(b)
+                            endif
+                        endif
+                        if latlon=2
+                            if b=34
+                                latlon=0
+                            else 
+                                lon$=lon$+chr$(b)
+                            endif
+                        endif
+                        if latlon=3
+                            if (b<48)|(b>57)
+                                latlon=0
+                            else 
+                                tms$=tms$+chr$(b)
+                            endif
+                        endif
+                        if latlon=4
+                            if b=13
+                                latlon=5
+                                ct=val(clen$)
+                            else 
+                                clen$=clen$+chr$(b)
+                            endif
+                        endif
+                        if latlon=5
+                            if right$(bf$,4)=rnlf$
+                                do_count=1
+                                latlon=0
+                            endif
+                        endif
+                    endif
+                    pokel ntwk_rgb, $000000
+                next
+                state=4
+            endif
+            pokel ntwk_rgb, $000000
+        wend
+    until ct<1
     poke k2_leds, peek(k2_leds) & $bf
 endproc
 
@@ -275,13 +337,6 @@ proc delay(count)
     next
 endproc
 
-' control commands to initialize the module
-data "AT+GMR"
-data "AT+UART_CUR?"
-data "AT+CWMODE_CUR=1"
-data "AT+CWMODE_CUR?"
-data "AT+CIPMUX=0"
-data "stop"
 
 ' sprite data for the ISS icon
 data $11,$1,$0
@@ -291,9 +346,9 @@ data $0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0,$0
 data $0,$b,$0,$b,$0,$0,$0,$0,$0,$0,$0,$b,$0,$b,$0,$0
 data $0,$b,$0,$b,$0,$0,$0,$0,$0,$0,$0,$b,$0,$b,$0,$0
 data $0,$b,$0,$b,$0,$0,$b,$b,$b,$0,$0,$b,$0,$b,$0,$0
-data $0,$b,$0,$b,$0,$0,$0,$b,$0,$0,$0,$b,$0,$b,$0,$0
+data $0,$8,$0,$8,$0,$0,$0,$b,$0,$0,$0,$8,$0,$8,$0,$0
 data $0,$b,$b,$b,$b,$b,$b,$b,$b,$b,$b,$b,$b,$b,$0,$0
-data $0,$b,$0,$b,$0,$0,$0,$b,$0,$0,$0,$b,$0,$b,$0,$0
+data $0,$8,$0,$8,$0,$0,$0,$b,$0,$0,$0,$8,$0,$8,$0,$0
 data $0,$b,$0,$b,$0,$0,$b,$b,$b,$0,$0,$b,$0,$b,$0,$0
 data $0,$b,$0,$b,$0,$0,$0,$0,$0,$0,$0,$b,$0,$b,$0,$0
 data $0,$b,$0,$b,$0,$0,$0,$0,$0,$0,$0,$b,$0,$b,$0,$0
@@ -423,6 +478,14 @@ data 999,999
 data -18,63,-13,65,-16,67,-20,66,-23,66,-24,65,-18,63
 
 data 888,888
+
+' control commands to initialize the module
+data "AT+GMR"
+data "AT+UART_CUR?"
+data "AT+CWMODE_CUR=1"
+data "AT+CWMODE_CUR?"
+data "AT+CIPMUX=0"
+data "stop"
 
 ' =========================================
 ' END DATA
