@@ -520,7 +520,8 @@
 2445 data "AT+CWMODE_CUR=1"
 2450 data "AT+CWMODE_CUR?"
 2455 data "AT+CIPMUX=0"
-2460 data "stop"
+2460 data "AT+CIPSTA_CUR?"
+2465 data "stop"
 
-2465 ' =========================================
-2470 ' END DATA
+2470 ' =========================================
+2475 ' END DATA

@@ -520,6 +520,7 @@ data "AT+UART_CUR?"
 data "AT+CWMODE_CUR=1"
 data "AT+CWMODE_CUR?"
 data "AT+CIPMUX=0"
+data "AT+CIPSTA_CUR?"
 data "stop"
 
 ' =========================================
