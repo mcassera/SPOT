@@ -53,6 +53,7 @@ s$=s$+"Host: api.open-notify.org"+chr$(13)+chr$(10)+chr$(13)+chr$(10)
 pl_counter=0:recon=0
 
 repeat
+    silentread()
     sendcommand(link$)
     delay(10000)
     silentread()
@@ -154,6 +155,10 @@ endproc
 
 proc connect_api()
     ' Connect to the API server for iss position data
+    while peek(wiz_fifo)<>0
+        readresponse()
+        delay(5000)
+    wend
     sendcommand("AT+CIPSTART='TCP','api.open-notify.org',80")
     delay(50000)
     readresponse()
@@ -185,6 +190,7 @@ proc readresponse()
         pokel ntwk_rgb, $000000
         print chr$(b);
         r$=right$(r$+chr$(b),10)
+        if right$(r$,5)="+IPD," then dump()
         if right$(r$,2)="OK" then poke wizfi_status, 1
         if right$(r$,4)="FAIL" then poke wizfi_status, 9
         if right$(r$,5)="ERROR" then poke wizfi_status, 8
@@ -204,6 +210,7 @@ proc silentread()
         b=peek(wiz_data)
         pokel ntwk_rgb, $000000
         r$=right$(r$+chr$(b),10)
+        if right$(r$,5)="+IPD," then dump()
         if right$(r$,2)="OK" then poke wizfi_status, 1
         if right$(r$,4)="FAIL" then poke wizfi_status, 9
         if right$(r$,5)="ERROR" then poke wizfi_status, 8
@@ -211,6 +218,34 @@ proc silentread()
         if right$(r$,6)="GOT IP" then poke ip_status, 1
     wend
     poke k2_leds, peek(k2_leds) & $bf
+endproc
+ 
+proc dump()
+    ' Dump the data from the WIZFi module when an 
+    ' +IPD response is received when not expected
+    ' to clear the buffer and prevent overflow
+    state=1:lgth$="":lgth=0
+    while peek(wiz_fifo)>0
+        pokel ntwk_rgb, $ff0000
+        b=peek(wiz_data)
+        if state=1
+            if chr$(b)=":"
+                state=2
+                lgth=val(lgth$)
+            else
+                lgth$=lgth$+chr$(b)
+            endif
+        endif
+        if state=2
+            for n=1 to lgth
+                pokel ntwk_rgb, $00ff00
+                b=peek(wiz_data)
+                pokel ntwk_rgb, $000000
+            next
+            state=0
+        endif
+        pokel ntwk_rgb, $000000
+    wend
 endproc
 
 proc getdata()
